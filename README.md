@@ -6,7 +6,7 @@ to answer when the documents don't contain enough information, rather than
 guessing. Built as a technical exercise in data engineering and RAG system
 design.
 
-**Live demo:** _add your Streamlit Cloud URL here once deployed_
+**Live demo:** rag-chatbot-demo-7kbicza3x4dejhmn4adarh.streamlit.app
 
 ---
 
