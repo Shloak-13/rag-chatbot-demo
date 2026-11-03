@@ -10,6 +10,7 @@ from your Kaggle notebook's Output tab and place it next to this file
 before deploying — see the deploy steps).
 """
 
+import re
 import streamlit as st
 import chromadb
 from sentence_transformers import SentenceTransformer
@@ -37,9 +38,50 @@ context provided below, which is extracted from the company's filings. Rules:
 - Never use outside knowledge about the company, the industry, or anything else.
 - When you do answer, cite the source filing and page number(s) you used.
 - Be precise with numbers — do not round or approximate figures from the context.
+- The question may be phrased differently than the source text (e.g. "did X
+  happen" instead of the document's own wording). Synthesize the answer from
+  what the context actually supports, even when the wording doesn't match
+  literally — don't refuse just because the question uses different words
+  than the document, if the context answers it.
 """
 
 st.set_page_config(page_title="Financial Filings RAG Chatbot", page_icon="📊")
+
+
+# ---------------------------------------------------------------------------
+# PII guardrail — mask Aadhaar/PAN-shaped numbers before anything reaches
+# Claude's API (i.e. before it leaves our infra), unmask in the response.
+# Requested on the Nov 2 call: don't send Aadhaar/PAN/account numbers to a
+# US-hosted LLM even if the user types them into the question.
+# ---------------------------------------------------------------------------
+AADHAAR_RE = re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\b")
+PAN_RE = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b")
+
+
+def mask_pii(text: str) -> tuple[str, dict[str, str]]:
+    """Replace Aadhaar/PAN-shaped numbers with placeholders. Returns the
+    masked text and a map to restore the originals afterward."""
+    redactions: dict[str, str] = {}
+    counter = 0
+
+    def _replace(pattern_name):
+        def _sub(m):
+            nonlocal counter
+            counter += 1
+            placeholder = f"[REDACTED_{pattern_name}_{counter}]"
+            redactions[placeholder] = m.group(0)
+            return placeholder
+        return _sub
+
+    masked = AADHAAR_RE.sub(_replace("AADHAAR"), text)
+    masked = PAN_RE.sub(_replace("PAN"), masked)
+    return masked, redactions
+
+
+def unmask_pii(text: str, redactions: dict[str, str]) -> str:
+    for placeholder, original in redactions.items():
+        text = text.replace(placeholder, original)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +156,17 @@ def answer_question(question: str) -> dict:
         f"[Source: {h['doc_name']}, page {h['page']}]\n{h['text']}" for h in hits
     )
 
+    # Mask any Aadhaar/PAN-shaped numbers in the question before it leaves
+    # our infra. The retrieved context comes from our own documents, not
+    # user input, so it isn't masked — only what the user typed is at risk.
+    masked_question, redactions = mask_pii(question)
+
     response = claude.messages.create(
         model=MODEL_NAME,
         max_tokens=600,
         system=SYSTEM_PROMPT,
         messages=[
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"}
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {masked_question}"}
         ],
     )
 
@@ -133,6 +180,9 @@ def answer_question(question: str) -> dict:
     )
     if answer_text is None:
         answer_text = "I wasn't able to generate a response to that — please rephrase or try again."
+
+    # Stitch any redacted PII back in, in case the model echoed a placeholder.
+    answer_text = unmask_pii(answer_text, redactions)
 
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
