@@ -163,7 +163,7 @@ def answer_question(question: str) -> dict:
 
     response = claude.messages.create(
         model=MODEL_NAME,
-        max_tokens=600,
+        max_tokens=1000,
         system=SYSTEM_PROMPT,
         messages=[
             {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {masked_question}"}
