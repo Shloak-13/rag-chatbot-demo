@@ -22,12 +22,16 @@ EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
 TOP_K = 10
 RELEVANCE_FLOOR = 0.35
 CHROMA_DIR = "./chroma_store"
-COLLECTION_NAME = "3m_filings"
+COLLECTION_NAME = "silverline_filings"
 MODEL_NAME = "claude-sonnet-5-5"
 
+# Rough per-token pricing for claude-sonnet-5-5, USD per token — for a
+# running cost estimate shown in the UI, not for billing.
+INPUT_COST_PER_TOKEN = 3.00 / 1_000_000
+OUTPUT_COST_PER_TOKEN = 15.00 / 1_000_000
+
 SYSTEM_PROMPT = """You are a financial-documents assistant. You answer ONLY using the
-context provided below, which is extracted from the company's SEC filings and quarterly
-reports. Rules:
+context provided below, which is extracted from the company's filings. Rules:
 - If the context does not contain enough information to answer, say exactly:
   "I don't have enough information in the provided documents to answer that."
 - Never use outside knowledge about the company, the industry, or anything else.
@@ -119,8 +123,22 @@ def answer_question(question: str) -> dict:
         ],
     )
 
+    # Defensive extraction — response.content can include a thinking block
+    # before the text block, or (rarely) no text block at all if generation
+    # is cut off or filtered. A bare next(...) on an empty generator throws
+    # StopIteration and crashes the whole app — this happened live on Nov 2.
     answer_text = next(
-        block.text for block in response.content if block.type == "text"
+        (block.text for block in response.content if block.type == "text"),
+        None,
+    )
+    if answer_text is None:
+        answer_text = "I wasn't able to generate a response to that — please rephrase or try again."
+
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    call_cost = input_tokens * INPUT_COST_PER_TOKEN + output_tokens * OUTPUT_COST_PER_TOKEN
+    st.session_state.setdefault("usage_log", []).append(
+        {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": call_cost}
     )
 
     return {
@@ -138,13 +156,28 @@ def answer_question(question: str) -> dict:
 # ---------------------------------------------------------------------------
 st.title("📊 Financial Filings RAG Chatbot")
 st.caption(
-    "Grounded over real 3M SEC filings (2015–2022 10-Ks, Q2 2023 10-Q) and "
-    "sample quarterly reports. Answers only from the documents — refuses "
-    "when nothing relevant is found, rather than guessing."
+    "Grounded over Silverline Industries' real financial filings — the "
+    "auditor's limited review report, board meeting minutes, and financial "
+    "results/resolutions spreadsheets. Answers only from the documents — "
+    "refuses when nothing relevant is found, rather than guessing."
 )
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+usage_log = st.session_state.setdefault("usage_log", [])
+with st.sidebar:
+    st.subheader("Session usage")
+    if usage_log:
+        total_in = sum(u["input_tokens"] for u in usage_log)
+        total_out = sum(u["output_tokens"] for u in usage_log)
+        total_cost = sum(u["cost_usd"] for u in usage_log)
+        st.write(f"Calls: {len(usage_log)}")
+        st.write(f"Input tokens: {total_in}")
+        st.write(f"Output tokens: {total_out}")
+        st.write(f"Estimated cost: ${total_cost:.4f}")
+    else:
+        st.write("No generation calls yet this session.")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
