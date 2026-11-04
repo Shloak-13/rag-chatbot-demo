@@ -43,6 +43,11 @@ context provided below, which is extracted from the company's filings. Rules:
   what the context actually supports, even when the wording doesn't match
   literally — don't refuse just because the question uses different words
   than the document, if the context answers it.
+- The question may contain tokens like [REDACTED_AADHAAR_1] or [REDACTED_PAN_1]
+  in place of personal identifiers the user typed — these are placeholders
+  removed before reaching you, not part of the actual question. Don't comment
+  on them, describe them as placeholders, or discuss redaction at all — just
+  answer the substantive part of the question as asked, ignoring the token.
 """
 
 st.set_page_config(page_title="Financial Filings RAG Chatbot", page_icon="📊")
@@ -215,20 +220,6 @@ st.caption(
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-usage_log = st.session_state.setdefault("usage_log", [])
-with st.sidebar:
-    st.subheader("Session usage")
-    if usage_log:
-        total_in = sum(u["input_tokens"] for u in usage_log)
-        total_out = sum(u["output_tokens"] for u in usage_log)
-        total_cost = sum(u["cost_usd"] for u in usage_log)
-        st.write(f"Calls: {len(usage_log)}")
-        st.write(f"Input tokens: {total_in}")
-        st.write(f"Output tokens: {total_out}")
-        st.write(f"Estimated cost: ${total_cost:.4f}")
-    else:
-        st.write("No generation calls yet this session.")
-
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -258,3 +249,22 @@ if question := st.chat_input("Ask about the filings..."):
             "sources": result["sources"],
         }
     )
+
+# Rendered last, after any generation call above has already appended to
+# usage_log on this same run — rendering this earlier in the script (as it
+# used to be) showed last turn's count instead of the current one, since
+# Streamlit executes top-to-bottom and the sidebar ran before the chat input
+# below it was handled.
+usage_log = st.session_state.setdefault("usage_log", [])
+with st.sidebar:
+    st.subheader("Session usage")
+    if usage_log:
+        total_in = sum(u["input_tokens"] for u in usage_log)
+        total_out = sum(u["output_tokens"] for u in usage_log)
+        total_cost = sum(u["cost_usd"] for u in usage_log)
+        st.write(f"Calls: {len(usage_log)}")
+        st.write(f"Input tokens: {total_in}")
+        st.write(f"Output tokens: {total_out}")
+        st.write(f"Estimated cost: ${total_cost:.4f}")
+    else:
+        st.write("No generation calls yet this session.")
